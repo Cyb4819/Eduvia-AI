@@ -1,0 +1,3 @@
+/backend/.env
+/backend/trained_gemma4_unsloth/adapter_model.safetensors
+/backend/trained_gemma4_unsloth/checkpoint-75/adapter_model.safetensors 
