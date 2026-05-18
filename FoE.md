@@ -315,3 +315,11 @@ Learning State
 - `backend/utils/learning_state.py` - Learning state detector implementation
 - `backend/utils/observer.py` - Behavioral signal detection
 - `backend/main.py` - FastAPI application and dashboard
+
+to use
+
+frontend: python "Future of Education - Eduvia AI/frontend/eduvia_ui.py"
+
+backend: cd "Future of Education - Eduvia AI/backend"
+
+uvicorn main:app

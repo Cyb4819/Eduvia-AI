@@ -21,7 +21,7 @@ MOVEMENT_THRESHOLD_HIGH = 15.0
 
 # Stuck detection thresholds
 STUCK_REGION_PERCENT = 0.15  # 15% of screen
-STUCK_DURATION_THRESHOLD = 20.0  # seconds (changed from 8.0 to 6.0)
+STUCK_DURATION_THRESHOLD = 6.0  # seconds (changed from 20.0 to 6.0)
 MISREAD_GAZE_WINDOW = 3.0  # seconds for rapid L-R-L pattern
 MISREAD_MAX_GAZE_SHIFTS = 3  # min shifts in window
 
@@ -78,6 +78,7 @@ class BehavioralObserver:
         self.running = False
         if self.cap:
             self.cap.release()
+            self.cap = None
         cv2.destroyAllWindows()
     
     def get_signals(self):
@@ -139,13 +140,7 @@ class BehavioralObserver:
                         self._state_change_callback(learning_state, confidence, full_signals)
                     except Exception:
                         pass  # Don't let callback errors break observer
-                # Also notify if stuck while focused
-                elif learning_state == 'focused' and stuck_signals.get('is_stuck'):
-                    try:
-                        full_signals['stuck_confidence'] = stuck_signals.get('stuck_confidence', 0.7)
-                        self._state_change_callback('stuck_while_focused', stuck_signals.get('stuck_confidence', 0.7), full_signals)
-                    except Exception:
-                        pass
+                # Also notify if misread
                 elif learning_state == 'focused' and stuck_signals.get('misread_detected'):
                     try:
                         full_signals['misread_confidence'] = stuck_signals.get('misread_confidence', 0.6)
@@ -163,26 +158,102 @@ class BehavioralObserver:
         self.cap.release()
     
     def _get_gaze_direction(self, landmarks, h, w):
-        right_eye = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
-        eye_coords = np.array([[landmarks[p].x, landmarks[p].y] for p in right_eye])
-        eye_region = np.mean(eye_coords, axis=0)
-        center = np.array([0.5, 0.5])  # Center of normalized space (0-1)
-        gaze_vec = center - eye_region
-        gaze_dist = np.linalg.norm(gaze_vec)
-        return bool(gaze_dist < GAZE_THRESHOLD)
-    
+        """
+        Detects if the user is looking at the screen.
+        Uses scale-invariant relative displacement of the iris within the eye eyelids.
+        Also uses nose symmetry to detect if the head is turned away.
+        """
+        try:
+            # 1. Right Eye Iris Displacement
+            right_eye_pts = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+            right_eye_coords = np.array([[landmarks[p].x, landmarks[p].y] for p in right_eye_pts])
+            right_eye_center = np.mean(right_eye_coords, axis=0)
+            right_iris_center = np.array([landmarks[473].x, landmarks[473].y])
+            right_width = np.linalg.norm(np.array([landmarks[33].x, landmarks[33].y]) - np.array([landmarks[133].x, landmarks[133].y]))
+            right_norm_disp = (right_iris_center - right_eye_center) / max(0.001, right_width)
+
+            # 2. Left Eye Iris Displacement
+            left_eye_pts = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+            left_eye_coords = np.array([[landmarks[p].x, landmarks[p].y] for p in left_eye_pts])
+            left_eye_center = np.mean(left_eye_coords, axis=0)
+            left_iris_center = np.array([landmarks[468].x, landmarks[468].y])
+            left_width = np.linalg.norm(np.array([landmarks[263].x, landmarks[263].y]) - np.array([landmarks[362].x, landmarks[362].y]))
+            left_norm_disp = (left_iris_center - left_eye_center) / max(0.001, left_width)
+
+            # 3. Gaze offset metric (magnitude of pupil displacement relative to eyelids center)
+            gaze_offset = (np.linalg.norm(right_norm_disp) + np.linalg.norm(left_norm_disp)) / 2.0
+
+            # 4. Head Turn Ratio (relative displacement of nose tip between cheeks)
+            p_nose = np.array([landmarks[1].x, landmarks[1].y])
+            p_right_cheek = np.array([landmarks[234].x, landmarks[234].y])
+            p_left_cheek = np.array([landmarks[454].x, landmarks[454].y])
+            dist_r = np.linalg.norm(p_nose - p_right_cheek)
+            dist_l = np.linalg.norm(p_nose - p_left_cheek)
+            face_width = max(0.001, np.linalg.norm(p_left_cheek - p_right_cheek))
+            head_turn_ratio = abs(dist_r - dist_l) / face_width
+
+            # Define thresholds:
+            # - gaze_offset < 0.20 means eyes are looking generally straight at the camera/screen.
+            # - head_turn_ratio < 0.25 means the head is facing forward.
+            is_looking_at_screen = bool(gaze_offset < 0.20 and head_turn_ratio < 0.25)
+            return is_looking_at_screen
+        except Exception:
+            return True  # Fallback to True to avoid false distraction alerts on mesh issues
+
     def _get_gaze_position(self, landmarks):
-        """Get normalized gaze position (x, y) from face landmarks."""
-        # Use nose tip as proxy for gaze direction
-        nose_tip = landmarks[1]
-        # Also use eye centers for more accuracy
-        left_eye = np.mean([[landmarks[p].x, landmarks[p].y] for p in [33, 133]], axis=0)
-        right_eye = np.mean([[landmarks[p].x, landmarks[p].y] for p in [362, 263]], axis=0)
-        eye_center = (left_eye + right_eye) / 2
-        # Blend nose and eye center
-        gaze_x = (nose_tip.x + eye_center[0]) / 2
-        gaze_y = (nose_tip.y + eye_center[1]) / 2
-        return (gaze_x, gaze_y)
+        """
+        Get normalized gaze position (x, y) mapped to screen space.
+        Maps the iris offset within the eyes to a screen coordinate (0..1, 0..1).
+        This makes stuck and misread detection work based on actual gaze movements!
+        """
+        try:
+            # Right Eye
+            right_eye_pts = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+            right_eye_coords = np.array([[landmarks[p].x, landmarks[p].y] for p in right_eye_pts])
+            right_eye_center = np.mean(right_eye_coords, axis=0)
+            right_iris_center = np.array([landmarks[473].x, landmarks[473].y])
+            right_width = np.linalg.norm(np.array([landmarks[33].x, landmarks[33].y]) - np.array([landmarks[133].x, landmarks[133].y]))
+            right_norm_disp = (right_iris_center - right_eye_center) / max(0.001, right_width)
+
+            # Left Eye
+            left_eye_pts = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+            left_eye_coords = np.array([[landmarks[p].x, landmarks[p].y] for p in left_eye_pts])
+            left_eye_center = np.mean(left_eye_coords, axis=0)
+            left_iris_center = np.array([landmarks[468].x, landmarks[468].y])
+            left_width = np.linalg.norm(np.array([landmarks[263].x, landmarks[263].y]) - np.array([landmarks[362].x, landmarks[362].y]))
+            left_norm_disp = (left_iris_center - left_eye_center) / max(0.001, left_width)
+
+            # Average normalized displacement
+            dx = (right_norm_disp[0] + left_norm_disp[0]) / 2.0
+            dy = (right_norm_disp[1] + left_norm_disp[1]) / 2.0
+
+            # Scale and offset to map to (0..1, 0..1)
+            # Typically displacement range is -0.15 to 0.15. Let's scale it by 3.3 to map to -0.5 to 0.5.
+            gaze_x = 0.5 + dx * 3.3
+            gaze_y = 0.5 + dy * 3.3
+
+            # Add low-frequency head movement contribution for absolute gaze mapping
+            # This makes reading scanlines even more accurate!
+            # Use nose tip position relative to center of cheeks
+            p_nose = np.array([landmarks[1].x, landmarks[1].y])
+            p_right_cheek = np.array([landmarks[234].x, landmarks[234].y])
+            p_left_cheek = np.array([landmarks[454].x, landmarks[454].y])
+            face_center = (p_right_cheek + p_left_cheek) / 2.0
+            head_offset_x = p_nose[0] - face_center[0]
+            head_offset_y = p_nose[1] - face_center[1]
+
+            # Incorporate head offset (e.g. if user turns head right, head_offset_x becomes positive)
+            gaze_x += head_offset_x * 1.5
+            gaze_y += head_offset_y * 1.5
+
+            gaze_x = float(np.clip(gaze_x, 0.0, 1.0))
+            gaze_y = float(np.clip(gaze_y, 0.0, 1.0))
+
+            return (gaze_x, gaze_y)
+        except Exception:
+            # Fallback to nose/eyes blend if mesh refinement fails
+            nose_tip = landmarks[1]
+            return (nose_tip.x, nose_tip.y)
     
     def _detect_stuck_and_misread(self, frame, signals):
         """

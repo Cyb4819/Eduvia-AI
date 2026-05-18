@@ -3,11 +3,27 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 import os
 import time
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 router = APIRouter()
 
-# Default PDF path
-DEFAULT_PDF_PATH = r"C:\Users\somos\OneDrive\Desktop\Future of Education - Eduvia AI\jesc101.pdf"
+# Default PDF path - search in multiple locations
+def _find_default_pdf():
+    """Find the default PDF in common locations."""
+    candidates = [
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "jesc101.pdf"),
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "jesc101.pdf"),
+        r"C:\Users\somos\OneDrive\Desktop\Future of Education - Eduvia AI\jesc101.pdf",  # Fallback
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]  # Return first candidate as default even if doesn't exist
+
+DEFAULT_PDF_PATH = None  # Will be resolved on first use
 
 # Content processor singleton
 _content_processor = None
@@ -17,10 +33,10 @@ def get_content_processor():
     """Get or initialize content processor."""
     global _content_processor
     if _content_processor is None:
-        from utils.content_processor import get_content_processor
+        from utils.content_processor_fixed import get_content_processor as get_processor
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         model_path = os.path.join(base_dir, "trained_gemma4_unsloth")
-        _content_processor = get_content_processor(model_path)
+        _content_processor = get_processor(model_path)
     return _content_processor
 
 
@@ -345,8 +361,13 @@ def index_document_for_rag(request: IndexDocumentRequest):
     the model to look at the document context.
     """
     target_path = request.pdf_path or DEFAULT_PDF_PATH
+    # Normalize path: forward slashes → backslashes for Windows
+    target_path = target_path.replace("/", "\\")
+    
+    logger.info(f"📥 Indexing request for: {target_path}")
     
     if not os.path.exists(target_path):
+        logger.error(f"❌ PDF not found: {target_path}")
         raise HTTPException(status_code=404, detail=f"PDF not found: {target_path}")
     
     try:
@@ -364,6 +385,8 @@ def index_document_for_rag(request: IndexDocumentRequest):
         
         # Store the text for later use
         _indexed_documents[request.doc_name] = pdf_result['clean_text']
+        
+        logger.info(f"✅ PDF indexed successfully: {index_result['num_chunks']} chunks, {len(pdf_result['clean_text'])} chars")
         
         return {
             "status": "success",
@@ -397,7 +420,7 @@ def tutorAsk(request: TutorQuestion):
         
         return result
     except Exception as e:
-        logger.error(f"Tutor error: {e}")
+        logger = logging.getLogger(__name__)
         raise HTTPException(status_code=500, detail=f"Tutor error: {str(e)}")
 
 

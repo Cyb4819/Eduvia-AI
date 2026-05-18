@@ -9,16 +9,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TriggerConfig:
-    # States that trigger intervention
-    intervention_states = {"distracted", "overloaded", "low_engagement", "stuck_while_focused", "misread_detected"}
+    intervention_states = {"distracted", "overloaded", "low_engagement", "misread_detected"}
     # Cooldown between auto-interventions for distraction states (seconds)
-    intervention_cooldown: float = 30.0
+    intervention_cooldown: float = 15.0
     # Cooldown between stuck/misread interventions (shorter, more responsive)
     stuck_cooldown: float = 15.0  # Reduced from 20s to 15s for more responsive help
     # Minimum confidence to trigger
-    min_confidence: float = 0.5
+    min_confidence: float = 0.6
     # Enable/disable auto-intervention
-    auto_intervention_enabled: bool = True
+    auto_intervention_enabled: bool = False
 
 
 class VoiceTriggerController:
@@ -62,7 +61,7 @@ class VoiceTriggerController:
             return False
         
         # Use appropriate cooldown based on state type
-        if self._current_state in {"stuck_while_focused", "misread_detected"}:
+        if self._current_state in {"misread_detected"}:
             time_since_last = time.time() - self._last_stuck_time
             cooldown = self.config.stuck_cooldown
         else:
@@ -77,7 +76,7 @@ class VoiceTriggerController:
     def _trigger_intervention(self, trigger_type: str, context: str):
         """Trigger an intervention."""
         # Update appropriate cooldown timestamp
-        if self._current_state in {"stuck_while_focused", "misread_detected"}:
+        if self._current_state in {"misread_detected"}:
             self._last_stuck_time = time.time()
         else:
             self._last_intervention_time = time.time()

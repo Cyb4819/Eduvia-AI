@@ -27,6 +27,8 @@ class RealTimeTTS:
         self._should_stop = False
         self._current_thread = None
         self._word_callback: Optional[Callable] = None
+        # pyttsx3 cannot have runAndWait() called concurrently from multiple threads
+        self._engine_lock = threading.Lock()
     
     def initialize(self):
         """Initialize the TTS engine."""
@@ -56,6 +58,12 @@ class RealTimeTTS:
             text: Text to speak
             word_by_word: If True, speaks word-by-word for real-time feel
         """
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+
         if self.engine is None:
             self.initialize()
         
@@ -68,45 +76,53 @@ class RealTimeTTS:
     
     def _speak_word_by_word(self, text: str):
         """Speak text word by word with callbacks for each word."""
-        self._is_speaking = True
-        words = text.split()
+        with self._engine_lock:
+            self._is_speaking = True
+            words = text.split()
         
-        for i, word in enumerate(words):
-            if self._should_stop:
-                break
-            
-            # Notify callback (for highlighting in UI)
-            if self._word_callback:
-                self._word_callback(word, i, len(words))
-            
-            # Speak single word
-            try:
-                self.engine.say(word)
-                self.engine.runAndWait()
-            except Exception as e:
-                logger.warning(f"Word speak error: {e}")
-            
-            # Small pause between words for natural feel
-            time.sleep(0.02)
-        
-        self._is_speaking = False
+        try:
+            for i, word in enumerate(words):
+                if self._should_stop:
+                    break
+                
+                # Notify callback (for highlighting in UI)
+                if self._word_callback:
+                    self._word_callback(word, i, len(words))
+                
+                # Speak single word
+                try:
+                    self.engine.say(word)
+                    self.engine.runAndWait()
+                except Exception as e:
+                    logger.warning(f"Word speak error: {e}")
+                
+                # Small pause between words for natural feel
+                time.sleep(0.02)
+        finally:
+            with self._engine_lock:
+                self._is_speaking = False
     
     def _speak_full(self, text: str):
         """Speak entire text at once."""
-        self._is_speaking = True
-        try:
-            self.engine.say(text)
-            self.engine.runAndWait()
-        except Exception as e:
-            logger.error(f"TTS speak error: {e}")
-        finally:
-            self._is_speaking = False
+        with self._engine_lock:
+            self._is_speaking = True
+            try:
+                self.engine.say(text)
+                self.engine.runAndWait()
+            except Exception as e:
+                logger.error(f"TTS speak error: {e}")
+            finally:
+                self._is_speaking = False
     
     def speak_async(self, text: str, word_by_word: bool = True):
         """Speak text in a background thread."""
         if self._current_thread and self._current_thread.is_alive():
             self.stop()
         
+        # Set speaking flag immediately to avoid race conditions when polling
+        with self._engine_lock:
+            self._is_speaking = True
+            
         self._current_thread = threading.Thread(
             target=self.speak, 
             args=(text, word_by_word),
@@ -213,4 +229,10 @@ def get_tts() -> RealTimeTTS:
     global _tts_instance
     if _tts_instance is None:
         _tts_instance = RealTimeTTS()
+        try:
+            _tts_instance.initialize()
+            logger.info("✅ TTS singleton initialized and ready")
+        except Exception as e:
+            logger.error(f"❌ TTS initialization failed: {e}")
+            # Don't raise, return the instance anyway - it may initialize later
     return _tts_instance

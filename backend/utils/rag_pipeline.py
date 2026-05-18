@@ -235,7 +235,11 @@ class SimpleRetriever:
         Uses keyword matching + position boosting for simple retrieval.
         For production, would use semantic embeddings (sentence-transformers).
         """
-        query_words = query.lower().split()
+        if not self.chunks:
+            logger.warning("⚠️ No chunks available for retrieval")
+            return []
+            
+        query_words = [w for w in query.lower().split() if len(w) > 2]  # Filter short words
         query_set = set(query_words)
         
         # Score each chunk
@@ -244,36 +248,52 @@ class SimpleRetriever:
         for chunk in self.chunks:
             score = 0.0
             
-            # Keyword matching in content
+            # Keyword matching in content - more granular
             chunk_content = chunk.content.lower()
+            matches = 0
             for word in query_set:
                 if word in chunk_content:
-                    score += 1.0
+                    matches += 1
+                    score += 2.0
                     # Bonus for keyword match
                     if word in chunk.keywords:
-                        score += 2.0
+                        score += 3.0
+            
+            # If no matches, skip this chunk
+            if matches == 0:
+                # Check substring matches as fallback
+                for word in query_set:
+                    if len(word) > 3 and word in chunk_content:
+                        score += 1.0
             
             # Boost for heading match
             if chunk.heading and any(word in chunk.heading.lower() for word in query_set):
-                score += 3.0
+                score += 5.0
             
             # Boost for summary match
             if chunk.summary:
                 summary_lower = chunk.summary.lower()
                 for word in query_set:
                     if word in summary_lower:
-                        score += 1.5
+                        score += 2.0
             
             # Boost for earlier chunks (often more important)
             if chunk.chunk_index < 3:
-                score *= 1.2
+                score *= 1.3
             
             if score > 0:
                 chunk_scores.append((chunk, score))
         
+        # If no relevant chunks found, return first chunks as fallback
+        if not chunk_scores and self.chunks:
+            logger.info(f"ℹ️ No keyword matches for '{query}', returning first chunks")
+            return [(self.chunks[i], 1.0) for i in range(min(top_k, len(self.chunks)))]
+        
         # Sort by score and return top_k
         chunk_scores.sort(key=lambda x: x[1], reverse=True)
-        return chunk_scores[:top_k]
+        result = chunk_scores[:top_k]
+        logger.info(f"✅ Retrieved {len(result)} chunks for query: '{query}'")
+        return result
     
     def get_context_for_query(self, query: str, max_chars: int = 3000) -> str:
         """
@@ -282,6 +302,10 @@ class SimpleRetriever:
         This is what gets injected into the LLM prompt as context.
         """
         results = self.retrieve(query, top_k=5)
+        
+        if not results:
+            logger.warning(f"⚠️ No context found for query: '{query}'")
+            return ""
         
         context_parts = []
         total_chars = 0
@@ -292,7 +316,9 @@ class SimpleRetriever:
             context_parts.append(f"[Page {chunk.page_number}, Chunk {chunk.chunk_index + 1}]\n{chunk.content}")
             total_chars += len(chunk.content)
         
-        return "\n\n".join(context_parts)
+        context = "\n\n".join(context_parts)
+        logger.info(f"📄 Built context: {len(context)} chars from {len(context_parts)} chunks")
+        return context
 
 
 class RAGPipeline:

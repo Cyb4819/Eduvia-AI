@@ -1,0 +1,233 @@
+/* style.qss */
+
+QMainWindow {
+    background-color: #0f1117;
+    color: #e8eaf0;
+    font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+}
+
+QWidget {
+    font-family: 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* Navbar */
+#navbar {
+    background-color: #13151f;
+    border-bottom: 1px solid #2a2d3e;
+}
+
+#brandLabel {
+    color: #4f6ef7;
+    font-weight: bold;
+    font-size: 18px;
+    padding-left: 10px;
+}
+
+#monitoringBtn {
+    background-color: #1e2235;
+    color: #e8eaf0;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: 600;
+}
+#monitoringBtn:checked {
+    background-color: #4f6ef7;
+    color: #ffffff;
+}
+
+#newBtn {
+    background-color: #4f6ef7;
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 16px;
+    font-weight: 600;
+}
+#newBtn:hover {
+    background-color: #3b5bd6;
+}
+
+/* PDF Area */
+#pdfArea {
+    background-color: #0f1117;
+}
+
+#pdfToolbar {
+    background-color: #1a1d27;
+    border-radius: 8px;
+    margin: 5px;
+    padding: 5px;
+}
+
+#pdfToolbar QPushButton {
+    background-color: transparent;
+    color: #a0aabf;
+    border: none;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 5px 10px;
+}
+
+#pdfToolbar QPushButton:hover {
+    background-color: #2a2d3e;
+    color: #ffffff;
+    border-radius: 4px;
+}
+
+/* Right Panel */
+#rightPanel {
+    background-color: #1a1d27;
+    border-left: 1px solid #2a2d3e;
+}
+
+#tabWidget::pane {
+    border: none;
+    background-color: #1a1d27;
+}
+
+QTabBar::tab {
+    background: transparent;
+    color: #6b7280;
+    padding: 12px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    border-bottom: 2px solid transparent;
+}
+
+QTabBar::tab:selected {
+    color: #4f6ef7;
+    border-bottom: 2px solid #4f6ef7;
+}
+
+QTabBar::tab:hover {
+    color: #e8eaf0;
+}
+
+/* Chat Area */
+#chatScrollArea {
+    background-color: #1a1d27;
+    border: none;
+}
+
+#chatScrollAreaWidgetContents {
+    background-color: #1a1d27;
+}
+
+#userBubble {
+    background-color: #2d3a5c;
+    color: #e8eaf0;
+    border-radius: 12px;
+    border-top-right-radius: 0px;
+    padding: 10px 14px;
+    font-size: 14px;
+}
+
+#tutorBubble {
+    background-color: #21253a;
+    color: #e8eaf0;
+    border-radius: 12px;
+    border-top-left-radius: 0px;
+    padding: 10px 14px;
+    font-size: 14px;
+    border: 1px solid #2a2d3e;
+}
+
+#chatInputContainer {
+    background-color: #21253a;
+    border-radius: 20px;
+    border: 1px solid #2a2d3e;
+    margin: 10px;
+    padding: 5px 15px;
+}
+
+#chatInput {
+    background-color: transparent;
+    color: #e8eaf0;
+    border: none;
+    font-size: 14px;
+}
+
+#chatSendBtn {
+    background-color: #4f6ef7;
+    color: white;
+    border: none;
+    border-radius: 14px;
+    min-width: 28px;
+    min-height: 28px;
+    max-width: 28px;
+    max-height: 28px;
+    font-weight: bold;
+}
+#chatSendBtn:hover {
+    background-color: #3b5bd6;
+}
+
+/* Summary / Stats specific */
+#summaryTitle {
+    font-size: 16px;
+    font-weight: bold;
+    color: #e8eaf0;
+}
+
+#summaryBox {
+    background-color: #21253a;
+    border: 1px solid #2a2d3e;
+    border-radius: 8px;
+    padding: 15px;
+    margin: 10px;
+}
+
+/* Scrollbars */
+QScrollBar:vertical {
+    background: #0f1117;
+    width: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background: #2a2d3e;
+    min-height: 20px;
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #4f6ef7;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+/* Tooltip/Popup */
+#textSelectionPopup {
+    background-color: #21253a;
+    border: 1px solid #4f6ef7;
+    border-radius: 8px;
+}
+
+#textSelectionPopup QPushButton {
+    background-color: transparent;
+    color: #e8eaf0;
+    border: none;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+#textSelectionPopup QPushButton:hover {
+    background-color: #2d3a5c;
+    border-radius: 6px;
+}
+
+#summarizeDropdown {
+    background-color: #4f6ef7;
+    color: white;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-weight: bold;
+    border: none;
+}
+#summarizeDropdown::drop-down {
+    border: none;
+}
+#summarizeDropdown:hover {
+    background-color: #3b5bd6;
+}

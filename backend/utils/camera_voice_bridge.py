@@ -96,7 +96,7 @@ class CameraVoiceBridge:
         except Exception as e:
             logger.error(f"Intervention run failed: {e}")
             # Ensure something is still delivered even on unexpected error
-            fallback = self._get_fallback_response(state)
+            fallback = self._get_followup_response(state)
             self._push_message({
                 "type": "intervention",
                 "state": state,
@@ -113,6 +113,15 @@ class CameraVoiceBridge:
         transcript = event["transcript"]
         state = event["state"]
         logger.info(f"🎤 Voice input received: '{transcript}' (state: {state})")
+        
+        # Push transcript to frontend immediately so you can verify listening
+        self._push_message({
+            "type": "voice_transcript",
+            "question": transcript,
+            "state": state,
+            "triggered_by": "voice_input",
+            "timestamp": time.time()
+        })
         
         # Run generation + speech in background
         threading.Thread(
@@ -185,69 +194,21 @@ class CameraVoiceBridge:
         Generate a contextual tutor response for the given learning state.
         Uses fallback responses directly for fast, reliable auto-intervention.
         """
-        return self._get_fallback_response(state)
-    
-    def _generate_stuck_explanation(self) -> str:
-        """
-        When user is stuck while focused, try to explain the content.
-        Uses RAG if available, otherwise uses model's general knowledge.
-        """
-        try:
-            from utils.content_processor import get_content_processor
-            import os
-            
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            model_path = os.path.join(base_dir, "trained_gemma4_unsloth")
-            processor = get_content_processor(model_path)
-            
-            # Get RAG pipeline and check if document is indexed
-            rag = processor._get_rag_pipeline()
-            
-            if rag.indexed_docs and len(rag.indexed_docs) > 0:
-                # RAG available - query the document
-                stuck_query = (
-                    "The learner has been stuck on a specific part of the material for 6+ seconds. "
-                    "Please find the most important or complex concept from the current section "
-                    "and explain it clearly and simply. Identify what might be confusing about this concept."
-                )
-                
-                result = processor.tutor_interaction(stuck_query, "stuck_while_focused", "default")
-                answer = result.get("answer", "")
-                
-                if not answer or len(answer) < 10:
-                    return "I notice you've been focused on this part for a while. Let me clarify — this concept explains that..."
-                
-                return f"I've been watching you focus on this part. Let me help clarify: {answer}"
-            else:
-                # RAG not available - use general knowledge
-                return self._get_general_knowledge_response(
-                    "I've been stuck on this concept - can you explain what this might be about?",
-                    "stuck_while_focused"
-                )
-            
-        except Exception as e:
-            logger.error(f"Error generating stuck explanation: {e}")
-            return "I notice you've been on this part for a while. Would you like me to explain it differently?"
+        return self._get_followup_response(state)
     
     def _get_tutor_answer(self, question: str, learning_state: str, is_intervention: bool = False) -> str:
         """Get tutor answer via RAG + Gemma 4. Falls back to model's general knowledge if RAG fails."""
         try:
-            from utils.content_processor import get_content_processor
+            from utils.content_processor_fixed import get_content_processor
             import os
             
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             model_path = os.path.join(base_dir, "trained_gemma4_unsloth")
             processor = get_content_processor(model_path)
             
-            # Ensure model is loaded
-            if not processor._is_loaded:
-                logger.info("🔄 Loading model before generating response...")
-                processor.load_model()
-            
-            # Check if pipeline is available
-            if processor.pipeline is None:
-                logger.error("❌ Pipeline is None - model may not have loaded properly")
-                return self._get_fallback_response(learning_state)
+            # Ollama: just perform health check / ensure server reachable
+            processor.load_model()
+
             
             # Check if document is indexed for RAG
             rag = processor._get_rag_pipeline()
@@ -271,7 +232,7 @@ class CameraVoiceBridge:
                 # Check for error or empty response
                 if not answer or len(answer.strip()) < 10:
                     logger.warning(f"⚠️ Low quality answer, using fallback")
-                    return self._get_fallback_response(learning_state)
+                    return self._get_followup_response(learning_state)
                 
                 return answer
             else:
@@ -283,7 +244,7 @@ class CameraVoiceBridge:
             logger.error(f"Tutor answer failed: {e}")
             import traceback
             traceback.print_exc()
-            return self._get_fallback_response(learning_state)
+            return self._get_followup_response(learning_state)
     
     def _get_general_knowledge_response(self, question: str, learning_state: str) -> str:
         """
@@ -291,22 +252,12 @@ class CameraVoiceBridge:
         The model should still respond even if the question is not from the PDF.
         """
         try:
-            from utils.content_processor import get_content_processor
+            from utils.content_processor_fixed import get_content_processor
             import os
             
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             model_path = os.path.join(base_dir, "trained_gemma4_unsloth")
             processor = get_content_processor(model_path)
-            
-            # Ensure model is loaded before using pipeline
-            if not processor._is_loaded:
-                logger.info("🔄 Loading model for general knowledge response...")
-                processor.load_model()
-            
-            # Check if pipeline is available
-            if processor.pipeline is None:
-                logger.error("❌ Pipeline not available")
-                return self._get_fallback_response(learning_state)
             
             # Build prompt for general knowledge response
             state_instructions = {
@@ -339,15 +290,10 @@ Keep response concise (2-3 sentences).
 <start_of_turn>model
 """
             
-            output = processor.pipeline(prompt, max_new_tokens=512)[0]['generated_text']
-            
-            if '<start_of_turn>model' in output:
-                answer = output.split('<start_of_turn>model')[-1].strip()
-            else:
-                answer = output.strip()
+            answer = processor.generate(prompt, max_new_tokens=512).strip()
             
             if not answer or len(answer.strip()) < 10:
-                return self._get_fallback_response(learning_state)
+                return self._get_followup_response(learning_state)
             
             return answer
             
@@ -355,24 +301,18 @@ Keep response concise (2-3 sentences).
             logger.error(f"General knowledge response failed: {e}")
             import traceback
             traceback.print_exc()
-            return self._get_fallback_response(learning_state)
+            return self._get_followup_response(learning_state)
     
-    def _get_fallback_response(self, state: str) -> str:
+    def _get_followup_response(self, state: str) -> str:
         """Get a contextual fallback response when RAG fails."""
         fallback_responses = {
             "distracted": "Hey! Let's try something different. Are you following along?",
             "overloaded": "Let's take it one step at a time. What's the part that's confusing you?",
             "low_engagement": "Hey there! Want to try a different approach to this?",
             "focused": "Great focus! Let me explain this a bit more clearly.",
-            "stuck_while_focused": "I notice you've been on this part for a while. Let me clarify — this concept is about understanding the key ideas. Would you like me to explain it differently?",
             "misread_detected": "Let me re-explain that part - it can be tricky!"
         }
         response = fallback_responses.get(state, "I'm here to help! Let me know what you need.")
-        
-        # Add more context for stuck state
-        if state == "stuck_while_focused":
-            response = "I notice you've been focused on this part for a while. Let me help clarify — this concept explains the main idea. Would you like me to break it down step by step?"
-        
         return response
     
     def _speak(self, text: str):

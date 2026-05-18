@@ -1,3 +1,9 @@
+import sys
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding='utf-8')
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding='utf-8')
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -37,38 +43,71 @@ app.include_router(tutor.router, prefix="/api", tags=["Tutor"])
 @app.on_event("startup")
 async def startup_event():
     try:
-        observer.start()
-        # Wire observer state changes to the voice bridge
-        observer.set_state_change_callback(bridge.update_state)
-        print("🧿 Behavioral Observer started & wired to Camera-Voice Bridge")
+        # DO NOT start observer/engine on startup to save CPU and honor user request
+        # observer.start()
+
+        # Wire observer state changes to both:
+        # 1) voice bridge (auto-intervention / TTS)
+        # 2) adaptive learning engine (Phase 5 proactive teaching)
+        from routes.tutor import get_adaptive_engine
+        engine = get_adaptive_engine()
+        # engine.start()
+
+        def _on_state_change(state: str, confidence: float, signals: dict):
+            bridge.update_state(state, confidence, signals)
+            try:
+                engine.update_observer_state(signals)
+            except Exception as _e:
+                # Don’t break observer callback if adaptive engine fails
+                print(f"⚠️ Adaptive engine update failed: {_e}")
+
+        observer.set_state_change_callback(_on_state_change)
+        print("🧿 Behavioral Observer callbacks wired to Camera-Voice Bridge + Adaptive Engine (Idle until explicitly started)")
+
         
         # Preload model and index default PDF in background to avoid first-request delay
         def _preload():
             try:
                 import os
                 import time
-                from utils.content_processor import get_content_processor
+                from utils.content_processor_fixed import get_content_processor
                 from utils.pdf_extractor import PDFExtractor
                 
+                # Get relative paths
                 base_dir = os.path.dirname(os.path.abspath(__file__))
                 model_path = os.path.join(base_dir, "trained_gemma4_unsloth")
+                
+                # Try to find PDF - check multiple locations
+                pdf_candidates = [
+                    os.path.join(base_dir, "..", "jesc101.pdf"),  # Root of project
+                    os.path.join(base_dir, "jesc101.pdf"),  # Backend dir
+                    r"C:\Users\somos\OneDrive\Desktop\Future of Education - Eduvia AI\jesc101.pdf",  # Fallback
+                ]
+                
+                pdf_path = None
+                for candidate in pdf_candidates:
+                    if os.path.exists(candidate):
+                        pdf_path = candidate
+                        break
+                
+                # Get processor (don't auto-load model in singleton getter)
                 processor = get_content_processor(model_path)
                 
-                # Load model first (may take time)
-                print("🔄 Loading Gemma 4 model (this may take a moment)...")
-                processor.load_model()
-                print("✅ Gemma 4 model preloaded")
+                # Load model only if needed
+                if not processor._is_loaded:
+                    print("🔄 Loading Gemma 4 model (this may take a moment)...")
+                    processor.load_model()
+                    print("✅ Gemma 4 model preloaded")
                 
-                # Then index the PDF
-                pdf_path = r"C:\Users\somos\OneDrive\Desktop\Future of Education - Eduvia AI\jesc101.pdf"
-                if os.path.exists(pdf_path):
-                    print("📚 Indexing PDF for RAG...")
+                # Then index the PDF if found
+                if pdf_path and os.path.exists(pdf_path):
+                    print(f"📚 Indexing PDF from: {pdf_path}")
                     extractor = PDFExtractor(pdf_path)
                     result = extractor.extract()
                     processor.index_document_for_rag(result['clean_text'], "default")
                     print("✅ Default PDF indexed for RAG")
                 else:
-                    print(f"⚠️ PDF not found at: {pdf_path}")
+                    print(f"⚠️ PDF not found in any location. RAG will use model's general knowledge.")
             except Exception as e:
                 print(f"⚠️ Preload warning: {e}")
                 import traceback
@@ -153,7 +192,14 @@ async def get_pdf_page_image(
     import fitz  # PyMuPDF
     import os
     
-    DEFAULT_PDF_PATH = r"C:\Users\somos\OneDrive\Desktop\Future of Education - Eduvia AI\jesc101.pdf"
+    # Find default PDF
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    default_pdf_candidates = [
+        os.path.join(base_dir, "..", "jesc101.pdf"),
+        os.path.join(base_dir, "jesc101.pdf"),
+        r"C:\Users\somos\OneDrive\Desktop\Future of Education - Eduvia AI\jesc101.pdf",
+    ]
+    DEFAULT_PDF_PATH = next((p for p in default_pdf_candidates if os.path.exists(p)), default_pdf_candidates[0])
     target_path = pdf_path or DEFAULT_PDF_PATH
     
     if not os.path.exists(target_path):
@@ -191,7 +237,14 @@ async def get_pdf_page_count(
     import fitz
     import os
     
-    DEFAULT_PDF_PATH = r"C:\Users\somos\OneDrive\Desktop\Future of Education - Eduvia AI\jesc101.pdf"
+    # Find default PDF
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    default_pdf_candidates = [
+        os.path.join(base_dir, "..", "jesc101.pdf"),
+        os.path.join(base_dir, "jesc101.pdf"),
+        r"C:\Users\somos\OneDrive\Desktop\Future of Education - Eduvia AI\jesc101.pdf",
+    ]
+    DEFAULT_PDF_PATH = next((p for p in default_pdf_candidates if os.path.exists(p)), default_pdf_candidates[0])
     target_path = pdf_path or DEFAULT_PDF_PATH
     
     if not os.path.exists(target_path):
@@ -321,6 +374,21 @@ async def dashboard():
         
         // Auto start streaming
         toggleStream();
+
+
+        setInterval(() => {
+        fetch('/api/bridge/messages')
+        .then(r => r.json())
+        .then(data => {
+            data.messages.forEach(msg => {
+                if (msg.type === 'intervention') {
+                    addToLog({learning_state: msg.state, timestamp: new Date().toISOString()});
+                // Optional: Show popup/chat message
+                    alert(`🤖 Auto-help: ${msg.response}`);
+                }
+            });
+        });
+    }, 2000);        
     </script>
 </body>
 </html>
@@ -352,47 +420,6 @@ class TriggerConfigRequest(BaseModel):
     auto_intervention_enabled: Optional[bool] = None
     intervention_cooldown: Optional[float] = None
     min_confidence: Optional[float] = None
-
-
-@app.post("/api/voice/ask")
-async def voice_ask(request: VoiceAskRequest):
-    """
-    Voice-triggered Q&A endpoint.
-    
-    This ALWAYS processes the question regardless of learning state.
-    Used when user explicitly asks via voice input.
-    """
-    try:
-        from utils.content_processor import get_content_processor
-        import os
-        
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(base_dir, "trained_gemma4_unsloth")
-        processor = get_content_processor(model_path)
-        
-        # Get answer with RAG
-        result = processor.tutor_interaction(
-            request.question,
-            request.learning_state or "focused",
-            "default"
-        )
-        
-        return {
-            "status": "success",
-            "question": request.question,
-            "answer": result.get("answer", "No response"),
-            "learning_state": request.learning_state,
-            "rag_enabled": result.get("rag_enabled", False),
-            "sources": result.get("sources", [])
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "question": request.question,
-            "answer": f"Error processing question: {str(e)}",
-            "error": str(e)
-        }
 
 
 @app.get("/api/camera/status")
@@ -433,6 +460,270 @@ async def update_trigger_config(request: TriggerConfigRequest):
         "message": "Trigger configuration updated",
         "config": controller.get_status()
     }
+
+
+@app.post("/api/observer/start")
+async def start_observer():
+    try:
+        observer.start()
+        return {"status": "success", "message": "Observer started"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/observer/stop")
+async def stop_observer():
+    try:
+        observer.stop()
+        return {"status": "success", "message": "Observer stopped"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ============================================
+# Voice I/O Endpoints - Complete Voice Flow
+# ============================================
+
+@app.post("/api/voice/ask")
+async def voice_ask(request: VoiceAskRequest):
+    """
+    Voice-triggered Q&A endpoint.
+    
+    This ALWAYS processes the question regardless of learning state.
+    Used when user explicitly asks via voice input.
+    
+    Returns:
+        - answer: The tutor's response (generated from PDF via RAG)
+        - rag_enabled: Whether PDF-based retrieval was used
+        - sources: Relevant excerpts from the PDF
+    """
+    try:
+        print(f"🎤 USER QUESTION: {request.question}")
+        from utils.content_processor_fixed import get_content_processor
+        import os
+        
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(base_dir, "trained_gemma4_unsloth")
+        processor = get_content_processor(model_path)
+        
+        # Ensure model is loaded
+        if not processor._is_loaded:
+            print("🔄 Loading Gemma model before response...")
+            processor.load_model()
+        
+        # Get answer with RAG - will use PDF if indexed
+        result = processor.tutor_interaction(
+            request.question,
+            request.learning_state or "focused",
+            "default"
+        )
+        
+        # Log response type
+        if result.get("rag_enabled") and result.get("context_used"):
+            print(f"✅ Response generated FROM PDF")
+        else:
+            print(f"⚠️ Response generated from model knowledge (PDF not indexed)")
+        
+        return {
+            "status": "success",
+            "question": request.question,
+            "answer": result.get("answer", "No response"),
+            "learning_state": request.learning_state,
+            "rag_enabled": result.get("rag_enabled", False),
+            "context_used": result.get("context_used", False),
+            "sources": result.get("sources", [])
+        }
+        
+    except Exception as e:
+        print(f"❌ Voice ask failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "question": request.question,
+            "answer": f"Error: {str(e)}",
+            "error": str(e)
+        }
+
+
+@app.post("/api/voice/speak")
+async def voice_speak(request: dict):
+    """
+    Text-to-Speech endpoint.
+    
+    Speaks the given text using pyttsx3.
+    
+    Request:
+        text: Text to speak
+        async: If true, speaks in background thread
+    
+    Response:
+        status: success/error
+        message: Status message
+    """
+    try:
+        text = request.get("text", "")
+        is_async = request.get("async", False)
+        
+        if not text:
+            return {"status": "error", "message": "No text provided"}
+        
+        print(f"🔊 Speaking: {text[:100]}...")
+        
+        from utils.tts_engine import get_tts
+        tts = get_tts()
+        
+        # Ensure TTS is initialized
+        if tts.engine is None:
+            tts.initialize()
+        
+        if is_async:
+            tts.speak_async(text, word_by_word=False)
+            return {"status": "success", "message": "Speaking in background"}
+        else:
+            tts.speak(text, word_by_word=False)
+            return {"status": "success", "message": "Speech completed"}
+        
+    except Exception as e:
+        print(f"❌ TTS failed: {e}")
+        return {"status": "error", "message": str(e), "error": str(e)}
+
+
+@app.post("/api/voice/full-interaction")
+async def voice_full_interaction(request: dict):
+    """
+    Complete voice interaction: process question and speak response.
+    
+    This is the MAIN endpoint for voice interaction flow.
+    
+    Request:
+        question: User's question
+        learning_state: Current learning state
+        speak: Whether to speak the response (default: True)
+    
+    Response:
+        question: Echo of the question
+        answer: Generated response
+        spoken: Whether response was spoken
+        rag_enabled: Whether PDF was used
+    """
+    try:
+        question = request.get("question", "")
+        learning_state = request.get("learning_state", "focused")
+        should_speak = request.get("speak", True)
+        
+        if not question:
+            return {"status": "error", "message": "No question provided"}
+        
+        print(f"🎤→🤖→🔊 FULL VOICE INTERACTION: {question}")
+        
+        # 1. Process question with Gemma + RAG
+        from utils.content_processor_fixed import get_content_processor
+        import os
+        
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(base_dir, "trained_gemma4_unsloth")
+        processor = get_content_processor(model_path)
+        
+        if not processor._is_loaded:
+            processor.load_model()
+        
+        # Get answer
+        result = processor.tutor_interaction(question, learning_state, "default")
+        answer = result.get("answer", "")
+        
+        # 2. Speak if requested
+        spoken = False
+        if should_speak and answer:
+            try:
+                from utils.tts_engine import get_tts
+                tts = get_tts()
+                if tts.engine is None:
+                    tts.initialize()
+                
+                print(f"🔊 Speaking response...")
+                # Speak in background so API returns immediately
+                tts.speak_async(answer, word_by_word=False)
+                spoken = True
+            except Exception as e:
+                print(f"⚠️ TTS error (continuing anyway): {e}")
+                # Don't fail - return answer even if TTS fails
+        
+        return {
+            "status": "success",
+            "question": question,
+            "answer": answer,
+            "learning_state": learning_state,
+            "spoken": spoken,
+            "rag_enabled": result.get("rag_enabled", False),
+            "context_used": result.get("context_used", False),
+            "sources": result.get("sources", [])
+        }
+        
+    except Exception as e:
+        print(f"❌ Full interaction failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/voice/status")
+async def voice_status():
+    """Get current voice system status."""
+    try:
+        from utils.tts_engine import get_tts
+        tts = get_tts()
+        
+        return {
+            "status": "success",
+            "tts_initialized": tts.engine is not None,
+            "tts_speaking": tts.is_speaking(),
+            "message": "✅ Voice system ready"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+
+# ============================================
+# Message Polling - For Frontend Updates
+# ============================================
+
+@app.get("/api/messages/poll")
+async def poll_messages():
+    """
+    Poll for messages from the voice bridge (for frontend polling).
+    
+    This allows the frontend to retrieve messages that were generated
+    by the auto-intervention system or voice responses.
+    """
+    messages = bridge.pop_messages()
+    return {
+        "status": "success",
+        "messages": messages,
+        "count": len(messages)
+    }
+
+
+# ============================================
+# Auto-Intervention Endpoints
+# ============================================
+
+@app.get("/api/intervention/status")
+async def intervention_status():
+    """Get status of auto-intervention system."""
+    controller = get_trigger_controller()
+    status = controller.get_status()
+    
+    return {
+        "auto_intervention_enabled": status.get("auto_intervention_enabled", False),
+        "intervention_cooldown": status.get("intervention_cooldown", 0),
+        "min_confidence": status.get("min_confidence", 0),
+        "message": "Auto-intervention triggers voice responses when learner appears stuck/distracted"
+    }
+    
 
 
 @app.get("/api/bridge/status")
